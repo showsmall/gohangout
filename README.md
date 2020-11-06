@@ -35,6 +35,7 @@
 - 开发 Plugin 的例子 [gohangout-plugin-examples](https://github.com/childe/gohangout-plugin-examples)
 - [使用sarama的 Kafka Input](https://github.com/DukeAnn/gohangout-input-kafka_sarama)
 - [Redis Input](https://github.com/childe/gohangout-input-redis)
+- [Split Filter](https://github.com/childe/gohangout-plugin-examples/tree/master/gohangout-filter-split) 一条消息Split 成多条
 
 
 ## 运行
@@ -399,11 +400,18 @@ bytes_source_field优先级高于source_field.  bytes_source_field是指字段�
 
 ### Kafka
 
+**特别注意** 参数需要是字符串, 像 `flush.interval.ms: "3000"` , 等等
+
 ```
 Kafka:
     topic: applog
-    bootstrap.servers: node1.kafka.corp.com:9092,node2.kafka.corp.com:9092,node3.kafka.corp.com:9092
-    flush.interval.ms: 10000
+    producer_settings:
+        bootstrap.servers: node1.kafka.corp.com:9092,node2.kafka.corp.com:9092,node3.kafka.corp.com:9092
+        flush.interval.ms: "3000"
+        metadata.max.age.ms: "10000"
+        # sasl.mechanism: PLAIN
+        # sasl.user: admin
+        # sasl.password: admin-secret
 ```
 
 ### clickhouse
@@ -411,6 +419,7 @@ Kafka:
 ```
 Clickhouse:
     table: 'hotel.weblog'
+    conn_max_life_time: 10
 	username: admin
 	password: XXX
     hosts:
@@ -421,6 +430,8 @@ Clickhouse:
     flush_interval: 30
     concurrent: 1
 ```
+
+*Notice:* 如果表中字段有 default 值, 目前只支持字符串和数字 的 DEFAULT 表达式解析和处理, 如果像 IPv4设置了default 值, 是处理不了的. 代码中写死了 IPv4 和 IPv6 的默认值都是0 
 
 #### table
 
@@ -445,6 +456,10 @@ clickhouse 节点列表. 必须配置
 #### concurrent
 
 bulk 的goroutine 最大值, 默认1
+
+#### conn_max_life_time
+
+到 ClickHouse 的连接的生存时间, 单位为分钟. 默认不设置, 也就是生存时间无限长.
 
 ## FILTER
 
@@ -473,21 +488,23 @@ Drop:
       - 'Before(-24h) || After(24h)'
 ```
 
-也支持括号, 像 `Exist(a) && (Exist(b) || Exist(c))`
+也支持括号和逻辑运算符, 像 `Exist(a) && (!Exist(b) || !Exist(c))`
 
 目前支持的函数如下:
 
 注意:
 
-**只有 EQ 函数需要使用双引号代表字符串, 因为 EQ 也可能做数字的比较, 其他所有函数都不需要双引号, 因为他们肯定是字符串函数**
+**EQ/IN 函数需要使用双引号代表字符串, 因为他们也可能做数字的比较, 其他所有函数都不需要双引号, 因为他们肯定是字符串函数**
 
-**EQ HasPrefix HasSuffix Contains Match , 这几个函数可以使用 jsonpath 表示, 除 EQ 外需要使用双引号**
+**EQ IN HasPrefix HasSuffix Contains Match , 这几个函数可以使用 [jsonpath](https://github.com/oliveagle/jsonpath) 表示, 除 EQ/IN 外需要使用双引号**
 
 - `Exist(user,name)` [user][name]存在
 
 - `EQ(user,age,20)` `EQ($.user.age,20)` [user][age]存在并等于20
 
-- `EQ(user,age,"20")` `EQ($.user.age,20)` [user][age]存在并等于"20" (字符串)
+- `EQ(user,age,"20")` `EQ($.user.age,"20")` [user][age]存在并等于"20" (字符串)
+
+- `IN(tags,"app")` `IN($.tags,"app")` "app"存在于 tags 数组中, tags 一定要是数组,否则认为条件不成立
 
 - `HasPrefix(user,name,liu)` `HasPrefix($.user.name,"liu")` [user][name]存在并以 liu 开头
 
@@ -569,12 +586,15 @@ overwrite: true 的情况下, 这些新字段会覆盖老字段(如果有的话)
 
 ### Convert
 
+现在只支持转成 float/int/string/bool 这四种类型
+
 ```
 Convert:
     fields:
         time_taken:
             remove_if_fail: false
-            setto_if_fail: 0
+            setto_if_nil: 0.0
+            setto_if_fail: 0.0
             to: float
         sc_bytes:
             to: int
@@ -596,8 +616,11 @@ Convert:
 
 如果转换失败, 刚将此字段的值设置为 XX . 优先级比 remove_if_fail 低.  如果 remove_if_fail 设置为 true, 则setto_if_fail 无效.
 
-#### to: string
-将一个任意数据类型通过json.Marshal序列化成字符串
+#### setto_if_nil: XX
+
+如果没有这个字段, 刚将此字段的值设置为 XX . 优先级最高
+
+
 ### Date
 
 ```
